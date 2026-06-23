@@ -10,7 +10,7 @@ A single-file web experience that uses **MediaPipe Hands** for hand tracking and
 Open the project in your browser and allow camera permissions.
 
 ## Project Structure
-- **`PARTICLE HEART.html`** — Everything is contained in this one HTML file (Three.js rendering + MediaPipe hand tracking).
+- **`index.html`** — Everything is contained in this one HTML file (Three.js rendering + MediaPipe hand tracking).
 
 ## How it Works
 - **Three.js** renders ~18,000 colored particles (`THREE.Points`) with additive blending.
@@ -35,7 +35,7 @@ Rotation and scale are influenced by the fingertip position and thumb–index di
 ## Running
 Because the project is a single HTML file with CDN dependencies, you can run it by simply opening:
 
-- `PARTICLE HEART.html`
+- `index.html`
 
 If your browser blocks camera access for `file://` URLs, serve it via a local web server.
 
@@ -48,7 +48,7 @@ python -m http.server 8000
 
 Then open:
 
-- http://localhost:8000/PARTICLE%20HEART.html
+- http://localhost:8000/index.html
 
 ## Notes / Troubleshooting
 - If camera access is denied, click the browser’s permission prompt and reload.

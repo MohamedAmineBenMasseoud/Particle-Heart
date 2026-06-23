@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hand Tracking + 3D Particle System (Pro)</title>
+
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: #000; overflow: hidden; }
+
+        #three-canvas {
+            position: fixed;
+            inset: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+        #webcam {
+            position: fixed;
+            inset: 0;
+            width: 100vw;
+            height: 100vh;
+            object-fit: cover;
+            transform: scaleX(-1);
+            opacity: 0.18;
+            z-index: 2;
+        }
+        #hand-canvas {
+            position: fixed;
+            inset: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 3;
+            pointer-events: none;
+        }
+
+        #status {
+            position: fixed;
+            top: 18px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: rgba(255, 80, 120, 0.95);
+            font-family: 'Segoe UI', sans-serif;
+            font-size: 14px;
+            letter-spacing: 2px;
+            z-index: 10;
+            text-shadow: 0 0 18px rgba(255, 80, 120, 0.9);
+            text-align: center;
+        }
+
+        #hint {
+            position: fixed;
+            bottom: 20px;
+            right: 24px;
+            color: rgba(255, 255, 255, 0.42);
+            font-family: 'Segoe UI', sans-serif;
+            font-size: 12px;
+            line-height: 1.9;
+            text-align: right;
+            z-index: 10;
+            user-select: none;
+        }
+
+        #fps {
+            position: fixed;
+            top: 18px;
+            left: 18px;
+            color: rgba(255, 255, 255, 0.35);
+            font-family: 'Segoe UI', sans-serif;
+            font-size: 12px;
+            z-index: 10;
+            user-select: none;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="three-canvas"></canvas>
+    <video id="webcam" autoplay muted playsinline></video>
+    <canvas id="hand-canvas"></canvas>
+
+    <div id="status">PARTICLE HEART ♥</div>
+    <div id="fps">FPS: --</div>
+
+    <div id="hint">
+        Finger gestures to change the shape:<br>
+        Finger 1 = push / swirl the particles<br>
+        Finger 2 = 3D star shape<br>
+        Finger 3 = smooth sphere shape<br>
+        Finger 0 or 4+ = go back to the heart shape
+    </div>
+
+    <script>
+        // --- 1) Three.js setup ---
+        const threeCanvas = document.getElementById('three-canvas');
+        const renderer = new THREE.WebGLRenderer({ canvas: threeCanvas, antialias: true, alpha: true });
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setSize(window.innerWidth, window.innerHeight);
+
+        const scene = new THREE.Scene();
+
+        const cam3d = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        cam3d.position.z = 5;
+
+        // Soft background fog to make depth more attractive
+        scene.fog = new THREE.FogExp2(0x000000, 0.055);
+
+        const COUNT = 18000;
+        const geo = new THREE.BufferGeometry();
+        const positions = new Float32Array(COUNT * 3);
+        const targets = new Float32Array(COUNT * 3);
+        const colors = new Float32Array(COUNT * 3);
+
+        // Initialize particles
+        for (let i = 0; i < COUNT; i++) {
+            const rand = Math.random();
+            if (rand < 0.5) {
+                colors[i * 3] = 1.0; colors[i * 3 + 1] = 0.22; colors[i * 3 + 2] = 0.45;
+            } else if (rand < 0.8) {
+                colors[i * 3] = 1.0; colors[i * 3 + 1] = 0.06; colors[i * 3 + 2] = 0.22;
+            } else {
+                colors[i * 3] = 1.0; colors[i * 3 + 1] = 0.82; colors[i * 3 + 2] = 0.92;
+            }
+
+            positions[i * 3] = (Math.random() - 0.5) * 10;
+            positions[i * 3 + 1] = (Math.random() - 0.5) * 10;
+            positions[i * 3 + 2] = (Math.random() - 0.5) * 10;
+        }
+
+        geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+        const mat = new THREE.PointsMaterial({
+            size: 0.03,
+            vertexColors: true,
+            transparent: true,
+            opacity: 0.92,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false
+        });
+
+        const ps = new THREE.Points(geo, mat);
+        scene.add(ps);
+
+        // Controls
+        let currentShape = '';
+        const handPoint = new THREE.Vector3();
+        let pushing = false;
+        let targetRotX = 0;
+        let targetRotY = 0;
+        let targetScl = 1;
+
+        // --- 2) Shape targets ---
+        function heart() {
+            for (let i = 0; i < COUNT; i++) {
+                const t = Math.random() * Math.PI * 2;
+                const r = Math.pow(Math.random(), 0.5);
+                const x = 16 * Math.pow(Math.sin(t), 3);
+                const y = 13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t);
+                const z = (Math.random() - 0.5) * 8;
+                const s = 0.13 * r;
+                targets[i * 3] = x * s;
+                targets[i * 3 + 1] = y * s;
+                targets[i * 3 + 2] = z * s * 0.2;
+            }
+            currentShape = 'heart';
+            document.getElementById('status').innerText = 'PARTICLE HEART ♥';
+        }
+
+        function star() {
+            for (let i = 0; i < COUNT; i++) {
+                const r = Math.pow(Math.random(), 0.5) * 2.5;
+                const branch = i % 5;
+                const branchAngle = (branch / 5 + Math.random() * 0.08) * Math.PI * 2;
+                targets[i * 3] = Math.cos(branchAngle) * r;
+                targets[i * 3 + 1] = Math.sin(branchAngle) * r;
+                targets[i * 3 + 2] = (Math.random() - 0.5) * 1.5;
+            }
+            currentShape = 'star';
+            document.getElementById('status').innerText = 'PARTICLE STAR ★';
+        }
+
+        function sphere() {
+            for (let i = 0; i < COUNT; i++) {
+                const r = Math.pow(Math.random(), 0.3) * 2.2;
+                const a = Math.random() * Math.PI * 2;
+                const phi = Math.acos(2 * Math.random() - 1);
+                targets[i * 3] = r * Math.sin(phi) * Math.cos(a);
+                targets[i * 3 + 1] = r * Math.sin(phi) * Math.sin(a);
+                targets[i * 3 + 2] = r * Math.cos(phi);
+            }
+            currentShape = 'sphere';
+            document.getElementById('status').innerText = 'PARTICLE SPHERE ⬤';
+        }
+
+        heart();
+
+        // --- 3) MediaPipe Hands ---
+        const videoEl = document.getElementById('webcam');
+        const handCanvas = document.getElementById('hand-canvas');
+        const hCtx = handCanvas.getContext('2d');
+
+        function resizeAll() {
+            handCanvas.width = window.innerWidth;
+            handCanvas.height = window.innerHeight;
+            cam3d.aspect = window.innerWidth / window.innerHeight;
+            cam3d.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+        window.addEventListener('resize', resizeAll);
+        resizeAll();
+
+        const hands = new Hands({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+
+        hands.setOptions({
+            maxNumHands: 2,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.6,
+            minTrackingConfidence: 0.5,
+            selfieMode: true
+        });
+
+        hands.onResults((results) => {
+            hCtx.clearRect(0, 0, handCanvas.width, handCanvas.height);
+
+            if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+                pushing = false;
+                return;
+            }
+
+            for (let i = 0; i < results.multiHandLandmarks.length; i++) {
+                const landmarks = results.multiHandLandmarks[i];
+                const tip = landmarks[8];
+
+                // Rotation: smooth via targets (animation loop lerps further)
+                targetRotY = (0.5 - tip.x) * Math.PI * 4;
+                targetRotX = (tip.y - 0.5) * Math.PI * 4;
+
+                // Push point: use x/y AND z for better depth interaction
+                // tip.z is roughly in camera space (normalized negative values). Map to a usable range.
+                const zMapped = (tip.z ?? 0) * -6; // invert so closer hand increases positive push depth
+                handPoint.set((0.5 - tip.x) * 10, (0.5 - tip.y) * 10, zMapped);
+
+                // Drawing
+                drawConnectors(hCtx, landmarks, HAND_CONNECTIONS, { color: 'rgba(255,80,150,0.85)', lineWidth: 3 });
+                drawLandmarks(hCtx, landmarks, { color: '#fff', fillColor: 'rgba(255,80,150,0.7)', radius: 5 });
+
+                // Gesture: count extended fingers
+                const fingerIndices = [8, 12, 16, 20];
+                let ext = 0;
+                fingerIndices.forEach(j => {
+                    if (landmarks[j].y < landmarks[j - 2].y) ext++;
+                });
+
+                // Scale based on thumb-index distance for better responsiveness
+                const handLabel = results.multiHandedness?.[i]?.label;
+                if (handLabel === 'Right') {
+                    const thumbTip = landmarks[4];
+                    const indexTip = landmarks[8];
+                    const d = Math.hypot(
+                        thumbTip.x - indexTip.x,
+                        thumbTip.y - indexTip.y,
+                        thumbTip.z - indexTip.z
+                    );
+                    targetScl = THREE.MathUtils.clamp(d * 6, 0.3, 3);
+                }
+
+                // Switch / push
+                if (ext === 1) {
+                    pushing = true;
+                } else {
+                    pushing = false;
+                    if (ext === 2 && currentShape !== 'star') star();
+                    else if (ext === 3 && currentShape !== 'sphere') sphere();
+                    else if ((ext === 0 || ext >= 4) && currentShape !== 'heart') heart();
+                }
+            }
+        });
+
+        function startCam() {
+            navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } })
+                .then((stream) => {
+                    videoEl.srcObject = stream;
+                    const camera = new Camera(videoEl, {
+                        onFrame: async () => {
+                            await hands.send({ image: videoEl });
+                        },
+                        width: 1280,
+                        height: 720
+                    });
+                    camera.start();
+                })
+                .catch((err) => {
+                    console.error('Camera access denied: ', err);
+                    document.getElementById('status').innerText = 'Enable camera access in your browser to shape the art!';
+                });
+        }
+        startCam();
+
+        // --- 4) Animation loop (better motion + slight turbulence) ---
+        const posAttr = geo.attributes.position;
+        const posArray = posAttr.array;
+
+        // FPS meter
+        const fpsEl = document.getElementById('fps');
+        let lastFpsT = performance.now();
+        let frames = 0;
+
+        let tGlobal = 0;
+        function animate() {
+            requestAnimationFrame(animate);
+            tGlobal += 0.016;
+
+            for (let i = 0; i < COUNT; i++) {
+                let px = posArray[i * 3];
+                let py = posArray[i * 3 + 1];
+                let pz = posArray[i * 3 + 2];
+
+                const tx = targets[i * 3];
+                const ty = targets[i * 3 + 1];
+                const tz = targets[i * 3 + 2];
+
+                // Shape lerp
+                const lerpAmt = 0.07;
+                px += (tx - px) * lerpAmt;
+                py += (ty - py) * lerpAmt;
+                pz += (tz - pz) * lerpAmt;
+
+                // Add subtle turbulence to feel more alive
+                const wobble = 0.02;
+                const w = Math.sin(tGlobal + i * 0.0008) * wobble;
+                px += w;
+                py -= w * 0.6;
+
+                // Push interaction
+                if (pushing) {
+                    const dx = px - handPoint.x;
+                    const dy = py - handPoint.y;
+                    const dz = pz - handPoint.z;
+                    const dSq = dx * dx + dy * dy + dz * dz;
+
+                    if (dSq < 1.5) {
+                        const f = (1.5 - dSq) * 0.42;
+                        const inv = 1 / Math.sqrt(dSq || 1);
+                        px += dx * inv * f;
+                        py += dy * inv * f;
+                        pz += dz * inv * f;
+                    }
+                }
+
+                posArray[i * 3] = px;
+                posArray[i * 3 + 1] = py;
+                posArray[i * 3 + 2] = pz;
+            }
+
+            posAttr.needsUpdate = true;
+
+            // Smooth rotation and scaling
+            ps.rotation.x = THREE.MathUtils.lerp(ps.rotation.x, targetRotX, 0.08);
+            ps.rotation.y = THREE.MathUtils.lerp(ps.rotation.y, targetRotY, 0.08);
+            ps.scale.setScalar(THREE.MathUtils.lerp(ps.scale.x, targetScl, 0.08));
+
+            renderer.render(scene, cam3d);
+
+            // Update FPS
+            frames++;
+            const now = performance.now();
+            if (now - lastFpsT >= 500) {
+                fpsEl.textContent = 'FPS: ' + Math.round((frames * 1000) / (now - lastFpsT));
+                frames = 0;
+                lastFpsT = now;
+            }
+        }
+        animate();
+    </script>
+</body>
+</html>
+
